@@ -14,7 +14,7 @@ enum Expression<T> {
     Division(Box<Expression<T>>, Box<Expression<T>>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum Token<T> {
     Number(T),
     BeginScope,
@@ -25,7 +25,7 @@ enum Token<T> {
     Division,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum ScopeNode {
     Leaf(Token<i32>),
     // InternalNode(parent_idx, children_tart_idx, nr_children)
@@ -83,162 +83,60 @@ fn create_scope_tree(tokens: Vec<Token<i32>>) -> Vec<ScopeNode> {
     scope_tree
 }
 
-fn parse_mult_div(
+fn parse_operations(
     scope_tree: &mut Vec<ScopeNode>,
     stack: &mut Vec<Expression<i32>>,
     parent_idx: usize,
     nr_children: usize,
+    operations: Vec<Token<i32>>,
 ) -> Result<usize, String> {
     let children_idx = parent_idx + 1;
     let mut child_i = children_idx;
     let mut nr_children = nr_children;
 
     while child_i < children_idx + nr_children {
-        if let ScopeNode::Leaf(Token::Multiplication) = scope_tree[child_i] {
-            // Bound check for left operand
-            if child_i == children_idx {
-                return Err(String::from("Unexpected ''"));
+        match &scope_tree[child_i] {
+            ScopeNode::Leaf(token) => {
+                if operations.contains(&token) {
+                    let lhs = match scope_tree[child_i - 1] {
+                        ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
+                        ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
+                        _ => Expression::Value(0), // TODO: Give error
+                    };
+                    let rhs = match scope_tree[child_i + 1] {
+                        ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
+                        ScopeNode::InternalNode(_, _, _) => match stack.pop() {
+                            Some(t) => t,
+                            None => panic!(
+                                "The stack is empty but an expression is needed {:?}",
+                                scope_tree[child_i]
+                            ),
+                        }, // TODO: check if there is an element on the stack
+                        _ => Expression::Value(0), // TODO: Give error
+                    };
+
+                    let expr = match token {
+                        Token::Multiplication => {
+                            Expression::Multiplication(Box::new(lhs), Box::new(rhs))
+                        }
+                        Token::Division => Expression::Division(Box::new(lhs), Box::new(rhs)),
+                        Token::Addition => Expression::Addition(Box::new(lhs), Box::new(rhs)),
+                        Token::Subtraction => Expression::Subtraction(Box::new(lhs), Box::new(rhs)),
+                        _ => return Err(String::from("Supplied token is not an operation")),
+                    };
+
+                    stack.push(expr);
+
+                    scope_tree.remove(child_i + 1);
+                    scope_tree.remove(child_i - 1);
+
+                    nr_children -= 2;
+
+                    child_i -= 1;
+                    scope_tree[child_i] = ScopeNode::InternalNode(0, 0, 0);
+                }
             }
-
-            // Bound check for right operand
-            if child_i - children_idx >= nr_children {
-                return Err(String::from("Expected expression after '*'"));
-            }
-
-            let lhs = match scope_tree[child_i - 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                _ => Expression::Value(0),                                // TODO: Give error
-            };
-            let rhs = match scope_tree[child_i + 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => match stack.pop() {
-                    Some(t) => t,
-                    None => panic!(
-                        "The stack is empty but an expression is needed {:?}",
-                        scope_tree[child_i]
-                    ),
-                }, // TODO: check if there is an element on the stack
-                _ => Expression::Value(0), // TODO: Give error
-            };
-
-            let expr = Expression::Multiplication(Box::new(lhs), Box::new(rhs));
-
-            stack.push(expr);
-
-            scope_tree.remove(child_i + 1);
-            scope_tree.remove(child_i - 1);
-
-            nr_children -= 2;
-
-            child_i -= 1;
-            scope_tree[child_i] = ScopeNode::InternalNode(0, 0, 0);
-        } else if let ScopeNode::Leaf(Token::Division) = scope_tree[child_i] {
-            // TODO: bound check these
-            let lhs = match scope_tree[child_i - 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                _ => Expression::Value(0),                                // TODO: Give error
-            };
-            let rhs = match scope_tree[child_i + 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                _ => Expression::Value(0),                                // TODO: Give error
-            };
-
-            let expr = Expression::Division(Box::new(lhs), Box::new(rhs));
-
-            stack.push(expr);
-
-            scope_tree.remove(child_i + 1);
-            scope_tree.remove(child_i - 1);
-
-            nr_children -= 2;
-
-            child_i -= 1;
-            scope_tree[child_i] = ScopeNode::InternalNode(0, 0, 0);
-        }
-
-        child_i += 1;
-    }
-
-    Ok(nr_children)
-}
-
-fn parse_add_sub(
-    scope_tree: &mut Vec<ScopeNode>,
-    stack: &mut Vec<Expression<i32>>,
-    parent_idx: usize,
-    nr_children: usize,
-) -> Result<usize, String> {
-    let children_idx = parent_idx + 1;
-    let mut child_i = children_idx;
-    let mut nr_children = nr_children;
-
-    while child_i < children_idx + nr_children {
-        if let ScopeNode::Leaf(Token::Addition) = scope_tree[child_i] {
-            // Bound check for left operand
-            if child_i == children_idx {
-                return Err(String::from("Unexpected ''"));
-            }
-
-            // Bound check for right operand
-            if child_i - children_idx >= nr_children {
-                return Err(String::from("Expected expression after '+'"));
-            }
-
-            let lhs = match scope_tree[child_i - 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                _ => Expression::Value(0),                                // TODO: Give error
-            };
-            let rhs = match scope_tree[child_i + 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => match stack.pop() {
-                    Some(t) => t,
-                    None => panic!(
-                        "The stack is empty but an expression is needed {:?}",
-                        scope_tree[child_i]
-                    ),
-                }, // TODO: check if there is an element on the stack
-                _ => Expression::Value(0), // TODO: Give error
-            };
-
-            let expr = Expression::Addition(Box::new(lhs), Box::new(rhs));
-
-            stack.push(expr);
-
-            scope_tree.remove(child_i + 1);
-            scope_tree.remove(child_i - 1);
-
-            nr_children -= 2;
-
-            child_i -= 1;
-            scope_tree[child_i] = ScopeNode::InternalNode(0, 0, 0);
-        } else if let ScopeNode::Leaf(Token::Subtraction) = scope_tree[child_i] {
-            // TODO: bound check these
-            let lhs = match scope_tree[child_i - 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                _ => Expression::Value(0),                                // TODO: Give error
-            };
-            let rhs = match scope_tree[child_i + 1] {
-                ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                _ => Expression::Value(0),                                // TODO: Give error
-            };
-
-            let expr = Expression::Subtraction(Box::new(lhs), Box::new(rhs));
-
-            stack.push(expr);
-
-            scope_tree.remove(child_i + 1);
-            scope_tree.remove(child_i - 1);
-
-            nr_children -= 2;
-
-            child_i -= 1;
-            scope_tree[child_i] = ScopeNode::InternalNode(0, 0, 0);
+            _ => (),
         }
 
         child_i += 1;
@@ -257,13 +155,25 @@ fn parse_scope(
     let mut nr_children = nr_children;
 
     // Scan for multiplication and division
-    nr_children = match parse_mult_div(scope_tree, stack, parent_index, nr_children) {
+    nr_children = match parse_operations(
+        scope_tree,
+        stack,
+        parent_index,
+        nr_children,
+        Vec::from([Token::Multiplication, Token::Division]),
+    ) {
         Ok(n) => n,
         Err(error) => return Err(error),
     };
 
     // Scan for addition and subtraction
-    nr_children = match parse_add_sub(scope_tree, stack, parent_index, nr_children) {
+    nr_children = match parse_operations(
+        scope_tree,
+        stack,
+        parent_index,
+        nr_children,
+        Vec::from([Token::Addition, Token::Subtraction]),
+    ) {
         Ok(n) => n,
         Err(error) => return Err(error),
     };
@@ -274,6 +184,10 @@ fn parse_scope(
             scope_tree[children_idx] = ScopeNode::InternalNode(0, 0, 0);
         }
     }
+
+    let last = stack.pop().unwrap();
+
+    stack.push(Expression::Scope(Box::new(last)));
 
     // remove node
     scope_tree.remove(parent_index);
