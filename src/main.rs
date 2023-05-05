@@ -1,10 +1,12 @@
 use std::io;
-use std::ops::Add;
-use std::ops::Div;
-use std::ops::Mul;
-use std::ops::Sub;
 
 #[derive(Debug)]
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+#[derive(Debug, Clone)]
 enum Expression<T> {
     Value(T),
     Scope(Box<Expression<T>>),
@@ -28,210 +30,33 @@ enum Token<T> {
 #[derive(Debug, PartialEq)]
 enum ScopeNode {
     Leaf(Token<i32>),
-    // InternalNode(parent_idx, children_tart_idx, nr_children)
+    // InternalNode(parent_idx, children_start_idx, nr_children)
     InternalNode(usize, usize, usize),
 }
 
-fn create_scope_tree(tokens: Vec<Token<i32>>) -> Vec<ScopeNode> {
-    let mut scope_tree: Vec<ScopeNode> = Vec::new();
-    let mut current_node_idx: usize = 0;
-
-    scope_tree.push(ScopeNode::InternalNode(0, 1, 0));
-
-    for token in tokens.into_iter() {
-        match token {
-            Token::BeginScope => {
-                // Increment number of children
-                match scope_tree[current_node_idx] {
-                    ScopeNode::InternalNode(a, b, c) => {
-                        scope_tree[current_node_idx] = ScopeNode::InternalNode(a, b, c + 1)
-                    }
-                    _ => (),
-                }
-
-                // Create new InternalNode representing the new scope
-                scope_tree.push(ScopeNode::InternalNode(
-                    current_node_idx,
-                    scope_tree.len() + 1,
-                    0,
-                ));
-
-                // Set the current node to the newly created node
-                current_node_idx = scope_tree.len() - 1;
-            }
-            Token::EndScope => {
-                // Set the current node to its parent
-                if let ScopeNode::InternalNode(parent_idx, _, _) = scope_tree[current_node_idx] {
-                    current_node_idx = parent_idx;
-                }
-            }
-            _ => {
-                // Add leaf as child of the node at current_node_idx
-                scope_tree.push(ScopeNode::Leaf(token));
-
-                // Increment number of children
-                match scope_tree[current_node_idx] {
-                    ScopeNode::InternalNode(a, b, c) => {
-                        scope_tree[current_node_idx] = ScopeNode::InternalNode(a, b, c + 1)
-                    }
-                    _ => (),
-                }
-            }
-        }
-    }
-
-    scope_tree
-}
-
-fn parse_operations(
-    scope_tree: &mut Vec<ScopeNode>,
-    stack: &mut Vec<Expression<i32>>,
-    parent_idx: usize,
-    nr_children: usize,
-    operations: Vec<Token<i32>>,
-) -> Result<usize, String> {
-    let children_idx = parent_idx + 1;
-    let mut child_i = children_idx;
-    let mut nr_children = nr_children;
-
-    while child_i < children_idx + nr_children {
-        match &scope_tree[child_i] {
-            ScopeNode::Leaf(token) => {
-                if operations.contains(&token) {
-                    let lhs = match scope_tree[child_i - 1] {
-                        ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                        ScopeNode::InternalNode(_, _, _) => stack.pop().unwrap(), // TODO: check if there is an element on the stack
-                        _ => Expression::Value(0), // TODO: Give error
-                    };
-                    let rhs = match scope_tree[child_i + 1] {
-                        ScopeNode::Leaf(Token::Number(n)) => Expression::Value(n),
-                        ScopeNode::InternalNode(_, _, _) => match stack.pop() {
-                            Some(t) => t,
-                            None => panic!(
-                                "The stack is empty but an expression is needed {:?}",
-                                scope_tree[child_i]
-                            ),
-                        }, // TODO: check if there is an element on the stack
-                        _ => Expression::Value(0), // TODO: Give error
-                    };
-
-                    let expr = match token {
-                        Token::Multiplication => {
-                            Expression::Multiplication(Box::new(lhs), Box::new(rhs))
-                        }
-                        Token::Division => Expression::Division(Box::new(lhs), Box::new(rhs)),
-                        Token::Addition => Expression::Addition(Box::new(lhs), Box::new(rhs)),
-                        Token::Subtraction => Expression::Subtraction(Box::new(lhs), Box::new(rhs)),
-                        _ => return Err(String::from("Supplied token is not an operation")),
-                    };
-
-                    stack.push(expr);
-
-                    scope_tree.remove(child_i + 1);
-                    scope_tree.remove(child_i - 1);
-
-                    nr_children -= 2;
-
-                    child_i -= 1;
-                    scope_tree[child_i] = ScopeNode::InternalNode(0, 0, 0);
-                }
-            }
-            _ => (),
-        }
-
-        child_i += 1;
-    }
-
-    Ok(nr_children)
-}
-
-fn parse_scope(
-    scope_tree: &mut Vec<ScopeNode>,
-    stack: &mut Vec<Expression<i32>>,
-    parent_index: usize,
-    nr_children: usize,
-) -> Result<(), String> {
-    let children_idx = parent_index + 1;
-    let mut nr_children = nr_children;
-
-    // Scan for multiplication and division
-    nr_children = match parse_operations(
-        scope_tree,
-        stack,
-        parent_index,
-        nr_children,
-        Vec::from([Token::Multiplication, Token::Division]),
-    ) {
-        Ok(n) => n,
-        Err(error) => return Err(error),
-    };
-
-    // Scan for addition and subtraction
-    nr_children = match parse_operations(
-        scope_tree,
-        stack,
-        parent_index,
-        nr_children,
-        Vec::from([Token::Addition, Token::Subtraction]),
-    ) {
-        Ok(n) => n,
-        Err(error) => return Err(error),
-    };
-
-    if nr_children > 0 {
-        if let ScopeNode::Leaf(Token::Number(n)) = scope_tree[children_idx] {
-            stack.push(Expression::Value(n));
-            scope_tree[children_idx] = ScopeNode::InternalNode(0, 0, 0);
-        }
-    }
-
-    let last = stack.pop().unwrap();
-
-    stack.push(Expression::Scope(Box::new(last)));
-
-    // remove node
-    scope_tree.remove(parent_index);
-
-    Ok(())
-}
-
-fn parse_expression(tokens: Vec<Token<i32>>) -> Result<Vec<Expression<i32>>, String> {
-    // The scope tree contains ScopeNode's that has a reference to their parent and children
-    let mut scope_tree = create_scope_tree(tokens);
-
-    // The stack will contain Expressions that represent a part of the input
-    let mut stack: Vec<Expression<i32>> = Vec::new();
-
-    // Loop over scope_tree backwards
-    let mut index: usize = scope_tree.len() - 1;
-
+fn main() {
     loop {
-        if let ScopeNode::InternalNode(parent_idx, children_idx, nr_children) = scope_tree[index] {
-            // This means that the node is already parsed and its expression is on the stack
-            if parent_idx == children_idx {
-                continue;
+        match run() {
+            Err(error) => {
+                println!("Could not evaluate user input: {error}");
             }
-
-            if let Result::Err(error) = parse_scope(&mut scope_tree, &mut stack, index, nr_children)
-            {
-                return Err(error);
+            Ok(value) => {
+                println!("The result is: {value}");
             }
         }
-
-        if index == 0 {
-            break;
-        }
-
-        index -= 1;
     }
-
-    println!("stack[0]:");
-    println!("{:?}", stack[0]);
-
-    Ok(stack)
 }
 
-// fn build_ast_from_node(tree: &mut Vec<ScopeNode>, node: ScopeNode) -> Expression<i32> {}
+fn run() -> Result<i32, String> {
+    let input = prompt(String::from("Enter expression"));
+    let tokens = tokenize_expression(&input)?;
+
+    println!("Tokens: {:?}", tokens);
+
+    let expression = parse_expression(tokens)?;
+
+    evaluate_expression(&expression)
+}
 
 fn prompt(prompt: String) -> String {
     let mut input = String::from("");
@@ -247,20 +72,10 @@ fn prompt(prompt: String) -> String {
 
 fn tokenize_expression(value: &String) -> Result<Vec<Token<i32>>, String> {
     let mut tokens: Vec<Token<i32>> = Vec::new();
-
     let mut number: Option<i32> = Option::None;
+    let mut iter = value.chars().peekable();
 
-    for c in value.chars() {
-        match number {
-            None => (),
-            Some(n) => {
-                if !('0'..='9').contains(&c) {
-                    tokens.push(Token::Number(n));
-                    number = Option::None;
-                }
-            }
-        }
-
+    while let Some(c) = iter.next() {
         match c {
             ' ' => (),
             '+' => tokens.push(Token::Addition),
@@ -282,43 +97,228 @@ fn tokenize_expression(value: &String) -> Result<Vec<Token<i32>>, String> {
             }
             _ => (),
         }
-    }
 
-    if let Option::Some(n) = number {
-        tokens.push(Token::Number(n));
+        if let Some(n) = number {
+            if iter.peek().is_none() || !('0'..='9').contains(iter.peek().unwrap()) {
+                tokens.push(Token::Number(n));
+                number = Option::None;
+            }
+        }
     }
 
     return Ok(tokens);
 }
 
-fn evaluate_expression<
-    T: Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Div<Output = T> + Copy,
->(
-    expression: &Expression<T>,
-) -> T {
-    match expression {
-        Expression::Value(value) => *value,
-        Expression::Scope(a) => evaluate_expression(a),
-        Expression::Addition(a, b) => evaluate_expression(a) + evaluate_expression(b),
-        Expression::Subtraction(a, b) => evaluate_expression(a) - evaluate_expression(b),
-        Expression::Multiplication(a, b) => evaluate_expression(a) * evaluate_expression(b),
-        Expression::Division(a, b) => evaluate_expression(a) / evaluate_expression(b),
+fn parse_expression(tokens: Vec<Token<i32>>) -> Result<Expression<i32>, String> {
+    // The scope tree contains ScopeNodes that have a reference to their parent and children
+    let mut scope_tree = create_scope_tree(tokens);
+
+    // Loop over scope_tree backwards
+    let mut index: usize = scope_tree.len() - 1;
+
+    loop {
+        if let Either::Right(ScopeNode::InternalNode(_, _, nr_children)) = scope_tree[index] {
+            if let Result::Err(error) = parse_scope(&mut scope_tree, index, nr_children) {
+                return Err(error);
+            }
+        }
+
+        if index == 0 {
+            break;
+        }
+
+        index -= 1;
+    }
+
+    match &scope_tree[0] {
+        Either::Left(expr) => Ok(expr.clone()),
+        _ => Err(String::from("ERROR")),
     }
 }
 
-fn main() {
-    let expression = prompt(String::from("Enter expression"));
-    let expression = tokenize_expression(&expression)
-        .map(&parse_expression)
-        .expect("error during parsing I suppose");
+fn create_scope_tree(tokens: Vec<Token<i32>>) -> Vec<Either<Expression<i32>, ScopeNode>> {
+    let mut scope_tree: Vec<Either<Expression<i32>, ScopeNode>> = Vec::new();
+    let mut current_node_idx: usize = 0;
 
-    match expression {
-        Err(error) => {
-            println!("Could not parse user input: {error}");
+    scope_tree.push(Either::Right(ScopeNode::InternalNode(0, 1, 0)));
+
+    for token in tokens.into_iter() {
+        match token {
+            Token::BeginScope => {
+                // Increment number of children
+                match scope_tree[current_node_idx] {
+                    Either::Right(ScopeNode::InternalNode(a, b, c)) => {
+                        scope_tree[current_node_idx] =
+                            Either::Right(ScopeNode::InternalNode(a, b, c + 1))
+                    }
+                    _ => (),
+                }
+
+                // Create new InternalNode representing the new scope
+                scope_tree.push(Either::Right(ScopeNode::InternalNode(
+                    current_node_idx,
+                    scope_tree.len() + 1,
+                    0,
+                )));
+
+                // Set the current node to the newly created node
+                current_node_idx = scope_tree.len() - 1;
+            }
+            Token::EndScope => {
+                // Set the current node to its parent
+                if let Either::Right(ScopeNode::InternalNode(parent_idx, _, _)) =
+                    scope_tree[current_node_idx]
+                {
+                    current_node_idx = parent_idx;
+                }
+            }
+            _ => {
+                // Add leaf as child of the node at current_node_idx
+                scope_tree.push(Either::Right(ScopeNode::Leaf(token)));
+
+                // Increment number of children
+                match scope_tree[current_node_idx] {
+                    Either::Right(ScopeNode::InternalNode(a, b, c)) => {
+                        scope_tree[current_node_idx] =
+                            Either::Right(ScopeNode::InternalNode(a, b, c + 1))
+                    }
+                    _ => (),
+                }
+            }
         }
-        Ok(value) => {
-            let result = evaluate_expression(&value[0]);
-            println!("The result is: {result}");
+    }
+
+    scope_tree
+}
+
+fn parse_scope(
+    scope_tree: &mut Vec<Either<Expression<i32>, ScopeNode>>,
+    parent_index: usize,
+    mut nr_children: usize,
+) -> Result<(), String> {
+    nr_children = parse_operations(
+        scope_tree,
+        parent_index,
+        nr_children,
+        Vec::from([Token::Multiplication, Token::Division]),
+    )?;
+
+    parse_operations(
+        scope_tree,
+        parent_index,
+        nr_children,
+        Vec::from([Token::Addition, Token::Subtraction]),
+    )?;
+
+    scope_tree.remove(parent_index);
+
+    Ok(())
+}
+
+fn parse_operations(
+    scope_tree: &mut Vec<Either<Expression<i32>, ScopeNode>>,
+    parent_idx: usize,
+    nr_children: usize,
+    operations: Vec<Token<i32>>,
+) -> Result<usize, String> {
+    let children_idx = parent_idx + 1;
+    let mut child_i = children_idx;
+    let mut nr_children = nr_children;
+
+    while child_i < children_idx + nr_children {
+        if let Either::Right(ScopeNode::Leaf(Token::Number(n))) = scope_tree[child_i] {
+            scope_tree[child_i] = Either::Left(Expression::Value(n));
+        }
+
+        child_i += 1;
+    }
+
+    child_i = children_idx;
+
+    while child_i < children_idx + nr_children {
+        match &scope_tree[child_i] {
+            Either::Right(ScopeNode::Leaf(token)) => {
+                if operations.contains(&token) {
+                    let lhs = match &scope_tree[child_i - 1] {
+                        Either::Left(expr) => expr.clone(),
+                        _ => {
+                            return Err(String::from("Expected lhs expression, but got scopenode"))
+                        }
+                    };
+
+                    let rhs = match &scope_tree[child_i + 1] {
+                        Either::Left(expr) => expr.clone(),
+                        _ => {
+                            return Err(String::from("Expected rhs expression, but got scopenode"))
+                        }
+                    };
+
+                    let expr = match token {
+                        Token::Multiplication => {
+                            Expression::Multiplication(Box::new(lhs), Box::new(rhs))
+                        }
+                        Token::Division => Expression::Division(Box::new(lhs), Box::new(rhs)),
+                        Token::Addition => Expression::Addition(Box::new(lhs), Box::new(rhs)),
+                        Token::Subtraction => Expression::Subtraction(Box::new(lhs), Box::new(rhs)),
+                        _ => return Err(String::from("Supplied token is not an operation")),
+                    };
+
+                    scope_tree.remove(child_i + 1);
+                    scope_tree.remove(child_i - 1);
+
+                    nr_children -= 2;
+
+                    child_i -= 1;
+                    scope_tree[child_i] = Either::Left(expr);
+
+                    // Decrease number of children in the parent scopenode
+                    if let Either::Right(ScopeNode::InternalNode(a, b, c)) = scope_tree[parent_idx]
+                    {
+                        scope_tree[parent_idx] =
+                            Either::Right(ScopeNode::InternalNode(a, b, c - 2));
+                    }
+                }
+            }
+            _ => (),
+        }
+
+        child_i += 1;
+    }
+
+    Ok(nr_children)
+}
+
+fn evaluate_expression(expression: &Expression<i32>) -> Result<i32, String> {
+    match expression {
+        Expression::Value(value) => Ok(*value),
+        Expression::Scope(a) => evaluate_expression(a),
+        Expression::Addition(a, b) => {
+            let a = evaluate_expression(a)?;
+            let b = evaluate_expression(b)?;
+
+            Ok(a + b)
+        }
+        Expression::Subtraction(a, b) => {
+            let a = evaluate_expression(a)?;
+            let b = evaluate_expression(b)?;
+
+            Ok(a - b)
+        }
+        Expression::Multiplication(a, b) => {
+            let a = evaluate_expression(a)?;
+            let b = evaluate_expression(b)?;
+
+            Ok(a * b)
+        }
+        Expression::Division(a, b) => {
+            let a = evaluate_expression(a)?;
+            let b = evaluate_expression(b)?;
+
+            if b == 0 {
+                Err(String::from("Division by zero"))
+            } else {
+                Ok(a / b)
+            }
         }
     }
 }
