@@ -7,6 +7,14 @@ enum Either<L, R> {
 }
 
 #[derive(Debug, Clone)]
+enum Statement<T> {
+    Definition {
+        identifier: String,
+        value: Expression<T>,
+    },
+}
+
+#[derive(Debug, Clone)]
 enum Expression<T> {
     Value(T),
     Scope(Box<Expression<T>>),
@@ -75,6 +83,10 @@ fn tokenize_expression(value: &String) -> Result<Vec<Token<i32>>, String> {
     let mut number: Option<i32> = Option::None;
     let mut iter = value.chars().peekable();
 
+    // 0: standard mode
+    // 1: text mode
+    let mut mode = 0;
+
     while let Some(c) = iter.next() {
         match c {
             ' ' => (),
@@ -95,6 +107,7 @@ fn tokenize_expression(value: &String) -> Result<Vec<Token<i32>>, String> {
                     number = Some(n * 10 + digit);
                 }
             }
+            'a'..='z' => {}
             _ => (),
         }
 
